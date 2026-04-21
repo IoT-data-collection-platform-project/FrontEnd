@@ -1,15 +1,21 @@
 import React from 'react';
-import { LayoutDashboard, TabletSmartphone, Settings } from 'lucide-react';
+// 💡 Cctv 아이콘 추가
+import { LayoutDashboard, TabletSmartphone, Settings, Cctv } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 const Sidebar = () => {
   const location = useLocation();
+
+  const hidePaths = ['/', '/signup'];
+  if (hidePaths.includes(location.pathname)) return null;
 
   const ICON_SIZE = 52;
 
   const menuItems = [
     { icon: <LayoutDashboard size={ICON_SIZE} />, path: '/', label: '대시보드' },
     { icon: <TabletSmartphone size={ICON_SIZE} />, path: '/device/approveReq', label: '연결 요청' },
+    // 💡 CCTV 메뉴 아이템 추가
+    { icon: <Cctv size={ICON_SIZE} />, path: '/cctv', label: '실시간 관제' },
     { icon: <Settings size={ICON_SIZE} />, path: '/settings', label: '설정' },
   ];
 
