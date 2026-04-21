@@ -1,12 +1,9 @@
-import React, { useState } from 'react';
-import { LayoutDashboard, TabletSmartphone, Settings, LogOut } from 'lucide-react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { apiFetch, readApiMessage } from '../Auth/api';
+import React from 'react';
+import { LayoutDashboard, TabletSmartphone, Settings } from 'lucide-react';
+import { Link, useLocation } from 'react-router-dom';
 
 const Sidebar = () => {
   const location = useLocation();
-  const navigate = useNavigate();
-  const [loggingOut, setLoggingOut] = useState(false);
 
   const hidePaths = ['/', '/signup'];
   if (hidePaths.includes(location.pathname)) return null;
@@ -18,26 +15,6 @@ const Sidebar = () => {
     { icon: <TabletSmartphone size={ICON_SIZE} />, path: '/device/approveReq', label: '연결 요청' },
     { icon: <Settings size={ICON_SIZE} />, path: '/settings', label: '설정' },
   ];
-
-  const handleLogout = async () => {
-    setLoggingOut(true);
-    try {
-      const response = await apiFetch('/api/auth/logout', {
-        method: 'POST',
-      });
-
-      if (!response.ok) {
-        alert(await readApiMessage(response, '로그아웃에 실패했습니다.'));
-        return;
-      }
-
-      navigate('/', { replace: true });
-    } catch {
-      alert('로그아웃에 실패했습니다.');
-    } finally {
-      setLoggingOut(false);
-    }
-  };
 
   return (
     // 배경을 흰색으로, 우측에 연한 테두리 추가
@@ -57,18 +34,6 @@ const Sidebar = () => {
           {item.icon}
         </Link>
       ))}
-      <button
-        type="button"
-        onClick={handleLogout}
-        disabled={loggingOut}
-        className="mt-auto mb-2 flex flex-col items-center gap-2 rounded-xl p-3 text-black transition-colors hover:bg-gray-100 disabled:opacity-50"
-        title="로그아웃"
-      >
-        <LogOut size={36} />
-        <span className="text-xs font-semibold">
-          {loggingOut ? '처리중' : '로그아웃'}
-        </span>
-      </button>
     </div>
   );
 };
