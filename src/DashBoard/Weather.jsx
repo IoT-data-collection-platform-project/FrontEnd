@@ -8,52 +8,18 @@ import { apiFetch } from "../Auth/api";
 import Paho from "paho-mqtt";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
-const normalizeMac = (value) => String(value || "").trim().toUpperCase();
 const normalizeMacKey = (value) =>
   String(value || "")
     .trim()
     .toUpperCase()
     .replace(/[^A-F0-9]/g, "");
 
+const formatMacForApi = (value) => String(value || "").trim().toUpperCase();
+
 function apiNumber(value) {
   if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isNaN(n) ? null : n;
-}
-
-function pickFirstDefined(...values) {
-  for (const value of values) {
-    if (value !== undefined && value !== null && value !== "") {
-      return value;
-    }
-  }
-  return null;
-}
-
-function normalizeTelemetryPayload(payload) {
-  const base = payload && typeof payload === "object" ? payload : {};
-  const nested =
-    (base.sensor && typeof base.sensor === "object" && base.sensor) ||
-    (base.data && typeof base.data === "object" && base.data) ||
-    {};
-
-  return {
-    temperature: apiNumber(pickFirstDefined(base.temperature, base.temp, base.ta, nested.temperature, nested.temp, nested.ta)),
-    humidity: apiNumber(pickFirstDefined(base.humidity, base.hum, base.hm, nested.humidity, nested.hum, nested.hm)),
-    pressure: apiNumber(pickFirstDefined(base.pressure, base.pres, nested.pressure, nested.pres)),
-    tvoc: apiNumber(pickFirstDefined(base.tvoc, base.TVOC, nested.tvoc, nested.TVOC)),
-    eco2: apiNumber(pickFirstDefined(base.eco2, base.eCO2, base.co2, nested.eco2, nested.eCO2, nested.co2)),
-    flameValue: apiNumber(
-      pickFirstDefined(
-        base.flameValue,
-        base.flame_value,
-        base.flame,
-        nested.flameValue,
-        nested.flame_value,
-        nested.flame,
-      ),
-    ),
-  };
 }
 
 function formatDashNumber(value, fractionDigits) {
@@ -188,38 +154,6 @@ function scoreLabelFromValue(score) {
   if (score >= 60) return "보통";
   if (score >= 40) return "나쁨";
   return "매우나쁨";
-}
-
-function computeIndoorScore({ temperature, humidity, tvoc, eco2, flameValue }) {
-  const t = apiNumber(temperature);
-  const h = apiNumber(humidity);
-  const v = apiNumber(tvoc);
-  const c = apiNumber(eco2);
-  const f = apiNumber(flameValue);
-
-  const hasAny = [t, h, v, c, f].some((value) => value != null);
-  if (!hasAny) return null;
-
-  // 100점 만점 기준으로 각 항목을 안전도 점수로 환산
-  const tempScore = t == null ? 20 : clamp(20 - Math.min(Math.abs(t - 22), 15) * (20 / 15), 0, 20);
-  const humidityScore = h == null ? 20 : clamp(20 - Math.min(Math.abs(h - 45), 45) * (20 / 45), 0, 20);
-  const tvocScore = v == null ? 20 : clamp(20 - Math.max(v - 200, 0) * (20 / 800), 0, 20);
-  const eco2Score = c == null ? 20 : clamp(20 - Math.max(c - 600, 0) * (20 / 1400), 0, 20);
-  const flameScore = f == null ? 20 : clamp(((f - 250) / 774) * 20, 0, 20);
-
-  return clamp(Math.round(tempScore + humidityScore + tvocScore + eco2Score + flameScore), 1, 100);
-}
-
-function flameValueWithAlert(flameValue, fireAlarm) {
-  const raw = apiNumber(flameValue);
-  const severity = String(fireAlarm?.severity || "").toUpperCase();
-  if (severity === "CRITICAL") {
-    return clamp(raw == null ? 220 : Math.min(raw, 220), 0, 1024);
-  }
-  if (severity === "WARNING") {
-    return clamp(raw == null ? 420 : Math.min(raw, 420), 0, 1024);
-  }
-  return raw;
 }
 
 function windDirectionInfo(degree) {
@@ -362,7 +296,6 @@ function Weather() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [activeMac, setActiveMac] = useState("");
   const activeMacRef = useRef("");
-  const activeMacKeyRef = useRef("");
   const dispatchedAlertKeysRef = useRef(new Set());
 
   // 💡 [추가] CCTV 소스 주소를 관리할 state (초기값은 빈 문자열)
@@ -381,8 +314,8 @@ function Weather() {
   );
 
   const hasMqttIndoorData = useMemo(() => {
-    const selectedSource = activeMac ? telemetryByMac[normalizeMacKey(activeMac)] ?? null : null;
-    const source = selectedSource ?? latestTelemetry;
+    const normalizedMac = normalizeMacKey(activeMac);
+    const source = normalizedMac ? telemetryByMac[normalizedMac] ?? latestTelemetry : latestTelemetry;
     if (!source) return false;
     return [source.temperature, source.humidity, source.pressure, source.tvoc, source.eco2, source.flameValue].some(
       (v) => v != null,
@@ -395,6 +328,9 @@ function Weather() {
       if (mac) params.set("mac", mac);
       const query = params.toString();
       const response = await apiFetch(`/api/ai/latest${query ? `?${query}` : ""}`);
+      if (response.status === 204) {
+        return;
+      }
       if (!response.ok) {
         throw new Error("latest-failed");
       }
@@ -414,20 +350,33 @@ function Weather() {
     [],
   );
 
+  const requestReanalysis = useCallback(async (mac) => {
+    const apiMac = formatMacForApi(mac);
+    if (!apiMac) return false;
+
+    const response = await apiFetch(`/api/ai/reanalyze?mac=${encodeURIComponent(apiMac)}`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      console.error("AI 재분석 요청 실패:", message || response.status);
+      return false;
+    }
+    return true;
+  }, []);
+
   const handleAnalysisRefresh = useCallback(async () => {
     if (!activeMac) return;
     try {
       setAnalysisLoading(true);
-      // 1) DB 저장된 최신 결과를 즉시 하단 박스에 표시
       await fetchLatestAnalysis(activeMac);
-      // 2) 동시에 최신 비정상/최근 센서값 기준 재분석을 백엔드에 요청
-      await apiFetch(`/api/ai/reanalyze?mac=${encodeURIComponent(activeMac)}`, { method: "POST" });
+      await requestReanalysis(activeMac);
     } catch (e) {
       console.error("AI 새로고침 실패:", e);
     } finally {
       setAnalysisLoading(false);
     }
-  }, [activeMac, fetchLatestAnalysis]);
+  }, [activeMac, fetchLatestAnalysis, requestReanalysis]);
 
   // 전체화면 토글 함수
   const handleFullscreen = () => {
@@ -461,7 +410,6 @@ function Weather() {
 
   useEffect(() => {
     activeMacRef.current = activeMac;
-    activeMacKeyRef.current = normalizeMacKey(activeMac);
   }, [activeMac]);
 
   useEffect(() => {
@@ -470,12 +418,11 @@ function Weather() {
       localStorage.getItem("iot.selectedDeviceMac") ||
       "";
     if (savedMac) {
-      setActiveMac(normalizeMac(savedMac));
+      setActiveMac(formatMacForApi(savedMac));
     }
 
     const onDeviceSelected = (event) => {
-      const selectedMac = normalizeMac(event?.detail?.mac || "");
-      setActiveMac(selectedMac);
+      setActiveMac(formatMacForApi(event?.detail?.mac || ""));
     };
 
     window.addEventListener("iot-device-selected", onDeviceSelected);
@@ -484,24 +431,40 @@ function Weather() {
 
   useEffect(() => {
     if (!activeMac) return;
-    fetchLatestAnalysis(activeMac).catch(() => {});
-  }, [activeMac, fetchLatestAnalysis]);
+
+    let cancelled = false;
+
+    const loadAnalysis = async () => {
+      try {
+        await fetchLatestAnalysis(activeMac);
+      } catch {
+        // 저장된 분석 결과가 없을 수 있음
+      }
+      if (cancelled) return;
+      await requestReanalysis(activeMac);
+    };
+
+    loadAnalysis();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMac, fetchLatestAnalysis, requestReanalysis]);
+
 
   useEffect(() => {
-    const brokerHost = "poor-pregnant-aaa-divorce.trycloudflare.com";
-    const brokerPort = 443;
+    const brokerHost = import.meta.env.VITE_MQTT_BROKER;
+    if (!brokerHost) {
+      console.error("MQTT 브로커 주소(VITE_MQTT_BROKER)가 설정되지 않았습니다.");
+      return undefined;
+    }
+    const brokerPort = 9001;
     const clientId = "react_client_" + Math.random().toString(16).substr(2, 8);
     const targetTopic = "gateway/+/telemetry";
     const targetTopic2 = "webbackend/alarm/+";
     const targetTopic3 = "webbackend/analysis/+";
 
     const client = new Paho.Client(brokerHost, brokerPort, clientId);
-
-    client.onConnectionLost = (responseObject) => {
-      if (responseObject?.errorCode !== 0) {
-        console.warn("MQTT 연결 끊김:", responseObject?.errorMessage || "unknown");
-      }
-    };
 
     client.onMessageArrived = (message) => {
       try {
@@ -511,7 +474,7 @@ function Weather() {
           const topicParts = String(topic).split("/");
           const macFromTopic = topicParts.length === 3 ? normalizeMacKey(topicParts[1]) : "";
           const telemetry = {
-            ...normalizeTelemetryPayload(payload),
+            ...payload,
             _macFromTopic: macFromTopic,
           };
           setLatestTelemetry(telemetry);
@@ -528,7 +491,7 @@ function Weather() {
         else if(topic.includes("alarm")) {
           const topicParts = String(topic).split("/");
           const alarmMac = topicParts.length === 3 ? normalizeMacKey(topicParts[2]) : "";
-          if (activeMacKeyRef.current && alarmMac && alarmMac !== activeMacKeyRef.current) {
+          if (activeMacRef.current && alarmMac && alarmMac !== normalizeMacKey(activeMacRef.current)) {
             return;
           }
           if (payload?.category) {
@@ -557,7 +520,7 @@ function Weather() {
             ...prev,
             [analysisMac]: analysis,
           }));
-          if (activeMacKeyRef.current && analysisMac !== activeMacKeyRef.current) {
+          if (activeMacRef.current && analysisMac !== normalizeMacKey(activeMacRef.current)) {
             return;
           }
           window.dispatchEvent(
@@ -576,9 +539,7 @@ function Weather() {
 
     client.connect({
       timeout: 3,
-      useSSL: true,
-      reconnect: true,
-      keepAliveInterval: 30,
+      useSSL: window.location.protocol === "https:",
       onSuccess: () => {
         client.subscribe(targetTopic);
         client.subscribe(targetTopic2);
@@ -709,8 +670,6 @@ function Weather() {
   }
 
   const latest = weather[0] ?? {};
-  const dryWarning = Boolean(data?.dryWarning);
-  const windWarning = Boolean(data?.windWarning);
   const ta = apiNumber(latest.ta);
   const hm = apiNumber(latest.hm);
   const ws = apiNumber(latest.ws);
@@ -719,37 +678,26 @@ function Weather() {
   const weatherText = latest.wf || latest.weather || latest.wfKor || "정보 없음";
   const windInfo = windDirectionInfo(wd);
 
-  const selectedTelemetry = activeMac ? telemetryByMac[normalizeMacKey(activeMac)] ?? null : null;
-  const indoorTelemetry = selectedTelemetry ?? latestTelemetry;
+  const hasScoreInput = ta != null || hm != null || rn != null || ws != null;
+  const dashboardScore = hasScoreInput ? clamp( Math.round( (ta != null ? clamp(((ta + 10) / 50) * 30, 0, 30) : 0) + (hm != null ? clamp((hm / 100) * 25, 0, 25) : 0) + (rn != null ? clamp((1 - Math.min(Math.abs(rn), 20) / 20) * 15, 0, 15) : 0) + (ws != null ? clamp((1 - ws / 15) * 15, 0, 15) : 0) + 15, ), 1, 100, ) : null;
+  const mainLabel = scoreLabelFromValue(dashboardScore);
+
+  const normalizedActiveMac = normalizeMacKey(activeMac);
+  const indoorTelemetry = normalizedActiveMac
+    ? telemetryByMac[normalizedActiveMac] ?? latestTelemetry
+    : latestTelemetry;
   const indoorTemp = indoorTelemetry?.temperature ?? null;
   const indoorHum = indoorTelemetry?.humidity ?? null;
   const indoorPressure = indoorTelemetry?.pressure ?? null;
   const indoorTvoc = indoorTelemetry?.tvoc ?? null;
   const indoorEco2 = indoorTelemetry?.eco2 ?? null;
   const indoorFlame = indoorTelemetry?.flameValue ?? null;
-  const dashboardScore = computeIndoorScore({
-    temperature: indoorTemp,
-    humidity: indoorHum,
-    tvoc: indoorTvoc,
-    eco2: indoorEco2,
-    flameValue: indoorFlame,
-  });
-  const mainLabel = scoreLabelFromValue(dashboardScore);
   const tempAlarm = alarmByCategory?.TEMP;
   const humidityAlarm = alarmByCategory?.HUMIDITY;
   const fireAlarm = alarmByCategory?.FIRE;
   const tvocAlarm = alarmByCategory?.TVOC;
   const eco2Alarm = alarmByCategory?.ECO2;
-  const effectiveFlameValue = flameValueWithAlert(indoorFlame, fireAlarm);
-  const effectiveDashboardScore = computeIndoorScore({
-    temperature: indoorTemp,
-    humidity: indoorHum,
-    tvoc: indoorTvoc,
-    eco2: indoorEco2,
-    flameValue: effectiveFlameValue,
-  });
-  const effectiveMainLabel = scoreLabelFromValue(effectiveDashboardScore);
-  const activeAnalysis = activeMac ? analysisByMac[normalizeMacKey(activeMac)] ?? null : null;
+  const activeAnalysis = normalizedActiveMac ? analysisByMac[normalizedActiveMac] ?? null : null;
   const analysisView = parseAnalysisSections(activeAnalysis?.summary ?? "");
   const overviewLines = activeAnalysis ? analysisView.overviewLines : ["분석 결과 수신 전입니다."];
   const controlLines = activeAnalysis ? analysisView.controlLines : ["AI 제어 분석 대기 중입니다."];
@@ -786,11 +734,11 @@ function Weather() {
     },
     {
       title: "화재 감지",
-      value: effectiveFlameValue,
+      value: indoorFlame,
       unit: "",
       min: 0,
       max: 1024,
-      sublabel: effectiveFlameValue != null && effectiveFlameValue < 500 ? "화재 의심" : "안전",
+      sublabel: indoorFlame != null && indoorFlame < 500 ? "화재 의심" : "안전",
       alertSeverity: fireAlarm?.severity,
       alertMessage: fireAlarm?.severity === "NORMAL" ? "" : fireAlarm?.message,
     },
@@ -817,10 +765,10 @@ function Weather() {
   ];
 
   const statusItems = [
-    { label: "좋음", icon: Smile, active: effectiveDashboardScore != null && effectiveMainLabel === "좋음" },
-    { label: "보통", icon: Meh, active: effectiveDashboardScore != null && effectiveMainLabel === "보통" },
-    { label: "나쁨", icon: Frown, active: effectiveDashboardScore != null && effectiveMainLabel === "나쁨" },
-    { label: "매우나쁨", icon: AlertTriangle, active: effectiveDashboardScore != null && effectiveMainLabel === "매우나쁨" },
+    { label: "좋음", icon: Smile, active: dashboardScore != null && mainLabel === "좋음" },
+    { label: "보통", icon: Meh, active: dashboardScore != null && mainLabel === "보통" },
+    { label: "나쁨", icon: Frown, active: dashboardScore != null && mainLabel === "나쁨" },
+    { label: "매우나쁨", icon: AlertTriangle, active: dashboardScore != null && mainLabel === "매우나쁨" },
   ];
 
   const isAnyCritical = Object.values(alarmByCategory).some(a => a.severity === "CRITICAL");
@@ -853,9 +801,9 @@ function Weather() {
             <div className="text-center px-2">
               <p className="text-xs font-semibold text-slate-700">점수</p>
               <p className="mt-1 text-5xl font-extrabold leading-none text-slate-900">
-                {effectiveDashboardScore == null ? "-" : effectiveDashboardScore}
+                {dashboardScore == null ? "-" : dashboardScore}
               </p>
-              <p className="mt-2 text-2xl font-bold text-slate-800">{effectiveMainLabel}</p>
+              <p className="mt-2 text-2xl font-bold text-slate-800">{mainLabel}</p>
             </div>
           </div>
 
@@ -943,11 +891,11 @@ function Weather() {
                 </div>
 
                 <div className="col-span-2 border-t border-slate-200/80 px-3 py-1 text-center text-[11px]">
-                  <p className={`font-semibold ${dryWarning ? "text-rose-600" : "text-emerald-700"}`}>
-                    건조주의보 {dryWarning ? "발령" : "미발령"}
+                  <p className={`font-semibold ${data.dryWarning ? "text-rose-600" : "text-emerald-700"}`}>
+                    건조주의보 {data.dryWarning ? "발령" : "미발령"}
                   </p>
-                  <p className={`mt-1 font-semibold ${windWarning ? "text-rose-600" : "text-emerald-700"}`}>
-                    강풍주의보 {windWarning ? "발령" : "미발령"}
+                  <p className={`mt-1 font-semibold ${data.windWarning ? "text-rose-600" : "text-emerald-700"}`}>
+                    강풍주의보 {data.windWarning ? "발령" : "미발령"}
                   </p>
                 </div>
               </div>
