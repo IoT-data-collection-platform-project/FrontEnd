@@ -81,8 +81,8 @@ function DeviceConnectionInfoPage() {
   }, []);
 
   useEffect(() => {
-    const brokerHost = import.meta.env.VITE_MQTT_BROKER;
-    const brokerPort = 9001;
+    const brokerHost = "";
+    const brokerPort = 443;
     const clientId = "react_conn_" + Math.random().toString(16).slice(2, 10);
     const topic = "gateway/+/telemetry";
     const client = new Paho.Client(brokerHost, brokerPort, clientId);
@@ -103,7 +103,7 @@ function DeviceConnectionInfoPage() {
 
     client.connect({
       timeout: 3,
-      useSSL: window.location.protocol === "https:",
+      useSSL: true,
       onSuccess: () => client.subscribe(topic),
       onFailure: () => {},
     });

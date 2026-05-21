@@ -225,7 +225,7 @@ function EnvControlPage() {
                 <button
                   type="button"
                   onClick={() => toggle("windowNorth")}
-                  disabled={!environmentState.windowNorth}
+                  disabled={!environmentState.windowNorth && !state.windowNorth}
                   className={`absolute left-1/2 top-[-16px] z-20 h-8 w-[146px] -translate-x-1/2 rounded-xl border-2 transition ${
                     state.windowNorth ? "border-sky-300 bg-sky-100" : "border-slate-300 bg-slate-200"
                   } ${!environmentState.windowNorth ? "cursor-not-allowed opacity-50" : ""}`}
@@ -239,7 +239,7 @@ function EnvControlPage() {
                 <button
                   type="button"
                   onClick={() => toggle("windowWest")}
-                  disabled={!environmentState.windowWest}
+                  disabled={!environmentState.windowWest && !state.windowWest}
                   className={`absolute left-[-69px] top-1/2 z-20 h-8 w-[146px] -translate-y-1/2 -rotate-90 rounded-xl border-2 transition ${
                     state.windowWest ? "border-sky-300 bg-sky-100" : "border-slate-300 bg-slate-200"
                   } ${!environmentState.windowWest ? "cursor-not-allowed opacity-50" : ""}`}
@@ -253,7 +253,7 @@ function EnvControlPage() {
                 <button
                   type="button"
                   onClick={() => toggle("windowEast")}
-                  disabled={!environmentState.windowEast}
+                  disabled={!environmentState.windowEast && !state.windowEast}
                   className={`absolute right-[-69px] top-1/2 z-20 h-8 w-[146px] -translate-y-1/2 -rotate-90 rounded-xl border-2 transition ${
                     state.windowEast ? "border-sky-300 bg-sky-100" : "border-slate-300 bg-slate-200"
                   } ${!environmentState.windowEast ? "cursor-not-allowed opacity-50" : ""}`}
@@ -267,7 +267,7 @@ function EnvControlPage() {
                 <button
                   type="button"
                   onClick={() => toggle("windowSouth")}
-                  disabled={!environmentState.windowSouth}
+                  disabled={!environmentState.windowSouth && !state.windowSouth}
                   className={`absolute bottom-[-16px] left-1/2 z-20 h-8 w-[146px] -translate-x-1/2 rounded-xl border-2 transition ${
                     state.windowSouth ? "border-cyan-300 bg-cyan-100" : "border-slate-300 bg-slate-200"
                   } ${!environmentState.windowSouth ? "cursor-not-allowed opacity-50" : ""}`}
@@ -291,7 +291,7 @@ function EnvControlPage() {
                           key={chip.key}
                           type="button"
                           onClick={() => toggle(chip.key)}
-                          disabled={!environmentState[chip.key]}
+                          disabled={!environmentState[chip.key] && !state[chip.key]}
                           className={`h-[98px] rounded-xl border px-3 text-center transition ${
                             active
                               ? `border-transparent ${chip.activeClass} text-white shadow`
@@ -314,7 +314,7 @@ function EnvControlPage() {
                           key={chip.key}
                           type="button"
                           onClick={() => toggle(chip.key)}
-                          disabled={!environmentState[chip.key]}
+                          disabled={!environmentState[chip.key] && !state[chip.key]}
                           className={`h-[98px] w-[150px] rounded-xl border px-3 text-center transition ${
                             active
                               ? `border-transparent ${chip.activeClass} text-white shadow`
@@ -350,7 +350,7 @@ function EnvControlPage() {
                           <Toggle
                             checked={state.windowNorth}
                             onChange={() => toggle("windowNorth")}
-                            disabled={!environmentState.windowNorth}
+                            disabled={!environmentState.windowNorth && !state.windowNorth}
                           />
                         </div>
                         <p className={`mt-1 text-[12px] font-semibold ${state.windowNorth ? "text-sky-600" : "text-slate-400"}`}>
@@ -366,7 +366,7 @@ function EnvControlPage() {
                           <Toggle
                             checked={state.windowWest}
                             onChange={() => toggle("windowWest")}
-                            disabled={!environmentState.windowWest}
+                            disabled={!environmentState.windowWest && !state.windowWest}
                           />
                         </div>
                         <p className={`mt-1 text-[12px] font-semibold ${state.windowWest ? "text-sky-600" : "text-slate-400"}`}>
@@ -382,7 +382,7 @@ function EnvControlPage() {
                           <Toggle
                             checked={state.windowEast}
                             onChange={() => toggle("windowEast")}
-                            disabled={!environmentState.windowEast}
+                            disabled={!environmentState.windowEast && !state.windowEast}
                           />
                         </div>
                         <p className={`mt-1 text-[12px] font-semibold ${state.windowEast ? "text-sky-600" : "text-slate-400"}`}>
@@ -398,7 +398,7 @@ function EnvControlPage() {
                           <Toggle
                             checked={state.windowSouth}
                             onChange={() => toggle("windowSouth")}
-                            disabled={!environmentState.windowSouth}
+                            disabled={!environmentState.windowSouth && !state.windowSouth}
                           />
                         </div>
                         <p className={`mt-1 text-[12px] font-semibold ${state.windowSouth ? "text-sky-600" : "text-slate-400"}`}>
@@ -432,7 +432,7 @@ function EnvControlPage() {
                         <Toggle
                           checked={state[item.key]}
                           onChange={() => toggle(item.key)}
-                          disabled={!environmentState[item.key]}
+                          disabled={!environmentState[item.key] && !state[item.key]}
                         />
                       </div>
                     );

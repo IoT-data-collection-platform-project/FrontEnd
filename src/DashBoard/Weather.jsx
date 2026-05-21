@@ -1,17 +1,59 @@
-import { AlertTriangle, CloudSun, Frown, MapPin, Meh, Smile, Maximize2, Thermometer, Droplets, Lightbulb } from "lucide-react";
-import { useEffect, useMemo, useState, useRef } from "react";
+import { AlertTriangle, CloudSun, Frown, MapPin, Meh, Smile, Maximize2, Thermometer, Droplets, Lightbulb, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { apiFetch } from "../Auth/api";
+
+// 💡 1. MQTT 라이브러리 임포트
 import Paho from "paho-mqtt";
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 const normalizeMac = (value) => String(value || "").trim().toUpperCase();
+const normalizeMacKey = (value) =>
+  String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-F0-9]/g, "");
 
 function apiNumber(value) {
   if (value == null || value === "") return null;
   const n = Number(value);
   return Number.isNaN(n) ? null : n;
+}
+
+function pickFirstDefined(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+  return null;
+}
+
+function normalizeTelemetryPayload(payload) {
+  const base = payload && typeof payload === "object" ? payload : {};
+  const nested =
+    (base.sensor && typeof base.sensor === "object" && base.sensor) ||
+    (base.data && typeof base.data === "object" && base.data) ||
+    {};
+
+  return {
+    temperature: apiNumber(pickFirstDefined(base.temperature, base.temp, base.ta, nested.temperature, nested.temp, nested.ta)),
+    humidity: apiNumber(pickFirstDefined(base.humidity, base.hum, base.hm, nested.humidity, nested.hum, nested.hm)),
+    pressure: apiNumber(pickFirstDefined(base.pressure, base.pres, nested.pressure, nested.pres)),
+    tvoc: apiNumber(pickFirstDefined(base.tvoc, base.TVOC, nested.tvoc, nested.TVOC)),
+    eco2: apiNumber(pickFirstDefined(base.eco2, base.eCO2, base.co2, nested.eco2, nested.eCO2, nested.co2)),
+    flameValue: apiNumber(
+      pickFirstDefined(
+        base.flameValue,
+        base.flame_value,
+        base.flame,
+        nested.flameValue,
+        nested.flame_value,
+        nested.flame,
+      ),
+    ),
+  };
 }
 
 function formatDashNumber(value, fractionDigits) {
@@ -76,6 +118,8 @@ function SemiGaugeCard({ title, value, unit, min, max, sublabel, alertSeverity, 
   const rOuter = 54;
   const rInner = 38;
   const needleLength = rInner - 8;
+
+  const [nx, ny] = polar(cx, cy, rInner - 8, needleAngle);
 
   return (
     <motion.div
@@ -146,6 +190,38 @@ function scoreLabelFromValue(score) {
   return "매우나쁨";
 }
 
+function computeIndoorScore({ temperature, humidity, tvoc, eco2, flameValue }) {
+  const t = apiNumber(temperature);
+  const h = apiNumber(humidity);
+  const v = apiNumber(tvoc);
+  const c = apiNumber(eco2);
+  const f = apiNumber(flameValue);
+
+  const hasAny = [t, h, v, c, f].some((value) => value != null);
+  if (!hasAny) return null;
+
+  // 100점 만점 기준으로 각 항목을 안전도 점수로 환산
+  const tempScore = t == null ? 20 : clamp(20 - Math.min(Math.abs(t - 22), 15) * (20 / 15), 0, 20);
+  const humidityScore = h == null ? 20 : clamp(20 - Math.min(Math.abs(h - 45), 45) * (20 / 45), 0, 20);
+  const tvocScore = v == null ? 20 : clamp(20 - Math.max(v - 200, 0) * (20 / 800), 0, 20);
+  const eco2Score = c == null ? 20 : clamp(20 - Math.max(c - 600, 0) * (20 / 1400), 0, 20);
+  const flameScore = f == null ? 20 : clamp(((f - 250) / 774) * 20, 0, 20);
+
+  return clamp(Math.round(tempScore + humidityScore + tvocScore + eco2Score + flameScore), 1, 100);
+}
+
+function flameValueWithAlert(flameValue, fireAlarm) {
+  const raw = apiNumber(flameValue);
+  const severity = String(fireAlarm?.severity || "").toUpperCase();
+  if (severity === "CRITICAL") {
+    return clamp(raw == null ? 220 : Math.min(raw, 220), 0, 1024);
+  }
+  if (severity === "WARNING") {
+    return clamp(raw == null ? 420 : Math.min(raw, 420), 0, 1024);
+  }
+  return raw;
+}
+
 function windDirectionInfo(degree) {
   if (degree == null) {
     return { label: "-", short: "-", angle: 0 };
@@ -190,10 +266,18 @@ function CompassRose({ angle, sizeClass = "h-28 w-28" }) {
         );
       })}
 
-      <text x="60" y="16" textAnchor="middle" fill="#e2e8f0" fontSize="10" fontWeight="700">N</text>
-      <text x="104" y="64" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">E</text>
-      <text x="60" y="112" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">S</text>
-      <text x="16" y="64" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">W</text>
+      <text x="60" y="16" textAnchor="middle" fill="#e2e8f0" fontSize="10" fontWeight="700">
+        N
+      </text>
+      <text x="104" y="64" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">
+        E
+      </text>
+      <text x="60" y="112" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">
+        S
+      </text>
+      <text x="16" y="64" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">
+        W
+      </text>
 
       <g style={{ transform: `rotate(${angle}deg)`, transformOrigin: "60px 60px", transition: "transform 0.35s ease" }}>
         <polygon points="60,19 56,60 64,60" fill="#ef4444" />
@@ -275,22 +359,77 @@ function Weather() {
   const [telemetryByMac, setTelemetryByMac] = useState({});
   const [alarmByCategory, setAlarmByCategory] = useState({});
   const [analysisByMac, setAnalysisByMac] = useState({});
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [activeMac, setActiveMac] = useState("");
   const activeMacRef = useRef("");
+  const activeMacKeyRef = useRef("");
+  const dispatchedAlertKeysRef = useRef(new Set());
 
+  // 💡 [추가] CCTV 소스 주소를 관리할 state (초기값은 빈 문자열)
   const [cctvSrc, setCctvSrc] = useState("");
 
   const navigate = useNavigate();
+  
+  // 💡 CCTV 전체화면을 위한 ref 생성
   const cctvContainerRef = useRef(null);
 
-  // 💡 1. CCTV 사설 IP를 클라우드 도메인으로 동기화 (보안 오류 방지)
-  const MEDIAMTX_IP = import.meta.env.VITE_MEDIAMTX_IP;
+  const RPI_IP = "192.168.137.111"; 
 
   const weather = useMemo(
     () => (Array.isArray(data?.weather) ? data.weather : []),
     [data],
   );
 
+  const hasMqttIndoorData = useMemo(() => {
+    const selectedSource = activeMac ? telemetryByMac[normalizeMacKey(activeMac)] ?? null : null;
+    const source = selectedSource ?? latestTelemetry;
+    if (!source) return false;
+    return [source.temperature, source.humidity, source.pressure, source.tvoc, source.eco2, source.flameValue].some(
+      (v) => v != null,
+    );
+  }, [activeMac, latestTelemetry, telemetryByMac]);
+
+  const fetchLatestAnalysis = useCallback(
+    async (mac) => {
+      const params = new URLSearchParams();
+      if (mac) params.set("mac", mac);
+      const query = params.toString();
+      const response = await apiFetch(`/api/ai/latest${query ? `?${query}` : ""}`);
+      if (!response.ok) {
+        throw new Error("latest-failed");
+      }
+      const payload = await response.json();
+      const targetMac = normalizeMacKey(payload?.macAddress || mac || "");
+      if (!targetMac) return;
+      const analysis = {
+        status: normalizeAnalysisStatus(payload?.status),
+        summary: normalizeAnalysisSummary(payload?.summary),
+        timestamp: payload?.createdAt ? new Date(payload.createdAt).getTime() : Date.now(),
+      };
+      setAnalysisByMac((prev) => ({
+        ...prev,
+        [targetMac]: analysis,
+      }));
+    },
+    [],
+  );
+
+  const handleAnalysisRefresh = useCallback(async () => {
+    if (!activeMac) return;
+    try {
+      setAnalysisLoading(true);
+      // 1) DB 저장된 최신 결과를 즉시 하단 박스에 표시
+      await fetchLatestAnalysis(activeMac);
+      // 2) 동시에 최신 비정상/최근 센서값 기준 재분석을 백엔드에 요청
+      await apiFetch(`/api/ai/reanalyze?mac=${encodeURIComponent(activeMac)}`, { method: "POST" });
+    } catch (e) {
+      console.error("AI 새로고침 실패:", e);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [activeMac, fetchLatestAnalysis]);
+
+  // 전체화면 토글 함수
   const handleFullscreen = () => {
     const elem = cctvContainerRef.current;
     if (!elem) return;
@@ -298,9 +437,9 @@ function Weather() {
     if (!document.fullscreenElement) {
       if (elem.requestFullscreen) {
         elem.requestFullscreen();
-      } else if (elem.webkitRequestFullscreen) {
+      } else if (elem.webkitRequestFullscreen) { /* Safari */
         elem.webkitRequestFullscreen();
-      } else if (elem.msRequestFullscreen) {
+      } else if (elem.msRequestFullscreen) { /* IE11 */
         elem.msRequestFullscreen();
       }
     } else {
@@ -310,18 +449,19 @@ function Weather() {
     }
   };
 
+  // 💡 [추가] 대시보드 렌더링이 끝난 후 CCTV 연결 시작 (블로킹 방지)
   useEffect(() => {
     if (data) {
       const timer = setTimeout(() => {
-        // http 강제 적용 시 브라우저 차단이 발생하므로 현재 프로토콜을 따라가도록 설정
-        setCctvSrc(`http://${MEDIAMTX_IP}:8889/cam`);
-      }, 500);
+        setCctvSrc(`http://${RPI_IP}:8889/cam`);
+      }, 500); // 0.5초 뒤에 렌더링
       return () => clearTimeout(timer);
     }
-  }, [data, MEDIAMTX_IP]);
+  }, [data]);
 
   useEffect(() => {
     activeMacRef.current = activeMac;
+    activeMacKeyRef.current = normalizeMacKey(activeMac);
   }, [activeMac]);
 
   useEffect(() => {
@@ -343,9 +483,13 @@ function Weather() {
   }, []);
 
   useEffect(() => {
-    // 💡 2. 하드코딩된 localhost 대신 브라우저의 접속 주소(KT 클라우드) 자동 획득
-    const brokerHost = import.meta.env.VITE_MQTT_BROKER;
-    const brokerPort = 9001;
+    if (!activeMac) return;
+    fetchLatestAnalysis(activeMac).catch(() => {});
+  }, [activeMac, fetchLatestAnalysis]);
+
+  useEffect(() => {
+    const brokerHost = "poor-pregnant-aaa-divorce.trycloudflare.com";
+    const brokerPort = 443;
     const clientId = "react_client_" + Math.random().toString(16).substr(2, 8);
     const targetTopic = "gateway/+/telemetry";
     const targetTopic2 = "webbackend/alarm/+";
@@ -353,15 +497,21 @@ function Weather() {
 
     const client = new Paho.Client(brokerHost, brokerPort, clientId);
 
+    client.onConnectionLost = (responseObject) => {
+      if (responseObject?.errorCode !== 0) {
+        console.warn("MQTT 연결 끊김:", responseObject?.errorMessage || "unknown");
+      }
+    };
+
     client.onMessageArrived = (message) => {
       try {
         const topic = message.destinationName;
         const payload = JSON.parse(message.payloadString);
         if(topic.includes("telemetry")) {
           const topicParts = String(topic).split("/");
-          const macFromTopic = topicParts.length === 3 ? normalizeMac(topicParts[1]) : "";
+          const macFromTopic = topicParts.length === 3 ? normalizeMacKey(topicParts[1]) : "";
           const telemetry = {
-            ...payload,
+            ...normalizeTelemetryPayload(payload),
             _macFromTopic: macFromTopic,
           };
           setLatestTelemetry(telemetry);
@@ -377,8 +527,8 @@ function Weather() {
         }
         else if(topic.includes("alarm")) {
           const topicParts = String(topic).split("/");
-          const alarmMac = topicParts.length === 3 ? normalizeMac(topicParts[2]) : "";
-          if (activeMacRef.current && alarmMac && alarmMac !== activeMacRef.current) {
+          const alarmMac = topicParts.length === 3 ? normalizeMacKey(topicParts[2]) : "";
+          if (activeMacKeyRef.current && alarmMac && alarmMac !== activeMacKeyRef.current) {
             return;
           }
           if (payload?.category) {
@@ -394,7 +544,7 @@ function Weather() {
         }
         else if(topic.includes("analysis")) {
           const topicParts = String(topic).split("/");
-          const analysisMac = topicParts.length === 3 ? normalizeMac(topicParts[2]) : "";
+          const analysisMac = topicParts.length === 3 ? normalizeMacKey(topicParts[2]) : "";
           if (!analysisMac) {
             return;
           }
@@ -407,7 +557,7 @@ function Weather() {
             ...prev,
             [analysisMac]: analysis,
           }));
-          if (activeMacRef.current && analysisMac !== activeMacRef.current) {
+          if (activeMacKeyRef.current && analysisMac !== activeMacKeyRef.current) {
             return;
           }
           window.dispatchEvent(
@@ -426,8 +576,9 @@ function Weather() {
 
     client.connect({
       timeout: 3,
-      // 💡 3. 접속 환경이 https면 웹소켓도 보안 통신(wss)을 쓰도록 자동 분기 처리
-      useSSL: window.location.protocol === "https:",
+      useSSL: true,
+      reconnect: true,
+      keepAliveInterval: 30,
       onSuccess: () => {
         client.subscribe(targetTopic);
         client.subscribe(targetTopic2);
@@ -442,20 +593,44 @@ function Weather() {
   }, []);
 
   useEffect(() => {
-    apiFetch("/api/dashboard")
-      .then((res) => {
+    let cancelled = false;
+    const loadDashboard = async (retry = 0) => {
+      try {
+        const res = await apiFetch("/api/dashboard");
         if (!res.ok) {
-          if (res.status === 401) { navigate("/", { replace: true }); throw new Error("로그인 필요"); }
-          throw new Error("정보를 불러오지 못했습니다.");
+          if (res.status === 401) {
+            const meRes = await apiFetch("/api/auth/me").catch(() => null);
+            if (meRes?.ok && retry < 2) {
+              setTimeout(() => loadDashboard(retry + 1), 500);
+              return;
+            }
+            navigate("/", { replace: true });
+            return;
+          }
+          throw new Error("dashboard-fetch-failed");
         }
-        return res.json();
-      })
-      .then((responseData) => setData(responseData))
-      .catch(() => setError("대시보드 정보를 불러오지 못했습니다."));
+        const responseData = await res.json();
+        if (!cancelled) {
+          setData(responseData);
+          setError("");
+        }
+      } catch {
+        if (cancelled) return;
+        if (retry < 2) {
+          setTimeout(() => loadDashboard(retry + 1), 700);
+          return;
+        }
+        setError("대시보드 정보를 불러오지 못했습니다.");
+      }
+    };
+    loadDashboard();
 
+      // 💡 2. [추가된 부분] 현재 진행 중인 비상 알람 상태 동기화
     if (!activeMac) {
       setAlarmByCategory({});
-      return;
+      return () => {
+        cancelled = true;
+      };
     }
     apiFetch(`/api/alerts/active/${activeMac}`)
       .then((res) => {
@@ -463,6 +638,7 @@ function Weather() {
         return [];
       })
       .then((activeAlerts) => {
+        // DB에서 가져온 활성 알람 리스트를 바탕으로 초기 상태 구성
         const initialAlarms = {};
         activeAlerts.forEach((alert) => {
           initialAlarms[alert.category] = {
@@ -471,9 +647,14 @@ function Weather() {
             timestamp: new Date(alert.createdAt).getTime(),
           };
         });
+        
+        // 가져온 데이터로 알람 State 초기화!
         setAlarmByCategory(initialAlarms);
       })
       .catch((err) => console.error("활성 알람 로깅 실패:", err));
+    return () => {
+      cancelled = true;
+    };
   }, [navigate, activeMac]);
 
   useEffect(() => {
@@ -481,13 +662,19 @@ function Weather() {
     if (alerts.length === 0) return;
     alerts.forEach(([category, alert]) => {
       if (!alert || (alert.severity !== "WARNING" && alert.severity !== "CRITICAL")) return;
+      const alertTime = alert.timestamp ? new Date(alert.timestamp).getTime() : Date.now();
+      const dedupeKey = `${category}|${alert.severity}|${alert.message || ""}|${alertTime}`;
+      if (dispatchedAlertKeysRef.current.has(dedupeKey)) {
+        return;
+      }
+      dispatchedAlertKeysRef.current.add(dedupeKey);
       window.dispatchEvent(
         new CustomEvent("iot-alert-raised", {
           detail: {
             category,
             severity: alert.severity,
             message: alert.message || "",
-            timestamp: alert.timestamp || Date.now(),
+            timestamp: alertTime,
           },
         }),
       );
@@ -504,7 +691,7 @@ function Weather() {
     );
   }
 
-  if (!data) {
+  if (!data && !hasMqttIndoorData) {
     return (
       <div className="h-full bg-slate-100 p-6 tracking-[-0.02em] leading-relaxed">
         <div className={`mx-auto max-w-6xl rounded-[24px] border border-slate-300/70 bg-white p-6 ${cardShadow}`}>
@@ -522,6 +709,8 @@ function Weather() {
   }
 
   const latest = weather[0] ?? {};
+  const dryWarning = Boolean(data?.dryWarning);
+  const windWarning = Boolean(data?.windWarning);
   const ta = apiNumber(latest.ta);
   const hm = apiNumber(latest.hm);
   const ws = apiNumber(latest.ws);
@@ -530,23 +719,37 @@ function Weather() {
   const weatherText = latest.wf || latest.weather || latest.wfKor || "정보 없음";
   const windInfo = windDirectionInfo(wd);
 
-  const hasScoreInput = ta != null || hm != null || rn != null || ws != null;
-  const dashboardScore = hasScoreInput ? clamp( Math.round( (ta != null ? clamp(((ta + 10) / 50) * 30, 0, 30) : 0) + (hm != null ? clamp((hm / 100) * 25, 0, 25) : 0) + (rn != null ? clamp((1 - Math.min(Math.abs(rn), 20) / 20) * 15, 0, 15) : 0) + (ws != null ? clamp((1 - ws / 15) * 15, 0, 15) : 0) + 15, ), 1, 100, ) : null;
-  const mainLabel = scoreLabelFromValue(dashboardScore);
-
-  const indoorTelemetry = activeMac ? telemetryByMac[activeMac] ?? null : latestTelemetry;
+  const selectedTelemetry = activeMac ? telemetryByMac[normalizeMacKey(activeMac)] ?? null : null;
+  const indoorTelemetry = selectedTelemetry ?? latestTelemetry;
   const indoorTemp = indoorTelemetry?.temperature ?? null;
   const indoorHum = indoorTelemetry?.humidity ?? null;
   const indoorPressure = indoorTelemetry?.pressure ?? null;
   const indoorTvoc = indoorTelemetry?.tvoc ?? null;
   const indoorEco2 = indoorTelemetry?.eco2 ?? null;
   const indoorFlame = indoorTelemetry?.flameValue ?? null;
+  const dashboardScore = computeIndoorScore({
+    temperature: indoorTemp,
+    humidity: indoorHum,
+    tvoc: indoorTvoc,
+    eco2: indoorEco2,
+    flameValue: indoorFlame,
+  });
+  const mainLabel = scoreLabelFromValue(dashboardScore);
   const tempAlarm = alarmByCategory?.TEMP;
   const humidityAlarm = alarmByCategory?.HUMIDITY;
   const fireAlarm = alarmByCategory?.FIRE;
   const tvocAlarm = alarmByCategory?.TVOC;
   const eco2Alarm = alarmByCategory?.ECO2;
-  const activeAnalysis = activeMac ? analysisByMac[activeMac] ?? null : null;
+  const effectiveFlameValue = flameValueWithAlert(indoorFlame, fireAlarm);
+  const effectiveDashboardScore = computeIndoorScore({
+    temperature: indoorTemp,
+    humidity: indoorHum,
+    tvoc: indoorTvoc,
+    eco2: indoorEco2,
+    flameValue: effectiveFlameValue,
+  });
+  const effectiveMainLabel = scoreLabelFromValue(effectiveDashboardScore);
+  const activeAnalysis = activeMac ? analysisByMac[normalizeMacKey(activeMac)] ?? null : null;
   const analysisView = parseAnalysisSections(activeAnalysis?.summary ?? "");
   const overviewLines = activeAnalysis ? analysisView.overviewLines : ["분석 결과 수신 전입니다."];
   const controlLines = activeAnalysis ? analysisView.controlLines : ["AI 제어 분석 대기 중입니다."];
@@ -583,11 +786,11 @@ function Weather() {
     },
     {
       title: "화재 감지",
-      value: indoorFlame,
+      value: effectiveFlameValue,
       unit: "",
       min: 0,
       max: 1024,
-      sublabel: indoorFlame != null && indoorFlame < 500 ? "화재 의심" : "안전",
+      sublabel: effectiveFlameValue != null && effectiveFlameValue < 500 ? "화재 의심" : "안전",
       alertSeverity: fireAlarm?.severity,
       alertMessage: fireAlarm?.severity === "NORMAL" ? "" : fireAlarm?.message,
     },
@@ -614,11 +817,14 @@ function Weather() {
   ];
 
   const statusItems = [
-    { label: "좋음", icon: Smile, active: dashboardScore != null && mainLabel === "좋음" },
-    { label: "보통", icon: Meh, active: dashboardScore != null && mainLabel === "보통" },
-    { label: "나쁨", icon: Frown, active: dashboardScore != null && mainLabel === "나쁨" },
-    { label: "매우나쁨", icon: AlertTriangle, active: dashboardScore != null && mainLabel === "매우나쁨" },
+    { label: "좋음", icon: Smile, active: effectiveDashboardScore != null && effectiveMainLabel === "좋음" },
+    { label: "보통", icon: Meh, active: effectiveDashboardScore != null && effectiveMainLabel === "보통" },
+    { label: "나쁨", icon: Frown, active: effectiveDashboardScore != null && effectiveMainLabel === "나쁨" },
+    { label: "매우나쁨", icon: AlertTriangle, active: effectiveDashboardScore != null && effectiveMainLabel === "매우나쁨" },
   ];
+
+  const isAnyCritical = Object.values(alarmByCategory).some(a => a.severity === "CRITICAL");
+  const isAnyWarning = Object.values(alarmByCategory).some(a => a.severity === "WARNING");
 
   return (
     <div
@@ -647,9 +853,9 @@ function Weather() {
             <div className="text-center px-2">
               <p className="text-xs font-semibold text-slate-700">점수</p>
               <p className="mt-1 text-5xl font-extrabold leading-none text-slate-900">
-                {dashboardScore == null ? "-" : dashboardScore}
+                {effectiveDashboardScore == null ? "-" : effectiveDashboardScore}
               </p>
-              <p className="mt-2 text-2xl font-bold text-slate-800">{mainLabel}</p>
+              <p className="mt-2 text-2xl font-bold text-slate-800">{effectiveMainLabel}</p>
             </div>
           </div>
 
@@ -737,11 +943,11 @@ function Weather() {
                 </div>
 
                 <div className="col-span-2 border-t border-slate-200/80 px-3 py-1 text-center text-[11px]">
-                  <p className={`font-semibold ${data.dryWarning ? "text-rose-600" : "text-emerald-700"}`}>
-                    건조주의보 {data.dryWarning ? "발령" : "미발령"}
+                  <p className={`font-semibold ${dryWarning ? "text-rose-600" : "text-emerald-700"}`}>
+                    건조주의보 {dryWarning ? "발령" : "미발령"}
                   </p>
-                  <p className={`mt-1 font-semibold ${data.windWarning ? "text-rose-600" : "text-emerald-700"}`}>
-                    강풍주의보 {data.windWarning ? "발령" : "미발령"}
+                  <p className={`mt-1 font-semibold ${windWarning ? "text-rose-600" : "text-emerald-700"}`}>
+                    강풍주의보 {windWarning ? "발령" : "미발령"}
                   </p>
                 </div>
               </div>
@@ -815,43 +1021,55 @@ function Weather() {
               transition={{ type: "spring", stiffness: 180, damping: 20 }}
               className={`flex w-full min-w-0 rounded-[24px] border border-slate-200/70 bg-white/95 p-4 ${cardShadow} ${cardHover}`}
             >
-              <div className="w-full h-[240px] rounded-[18px] border border-slate-200 bg-slate-50 p-3 overflow-hidden">
-                  <div className="grid h-full grid-cols-1 gap-3 xl:grid-cols-3">
-                    <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200 bg-white p-3 overflow-hidden">
+              <div className="relative w-full h-[214px] rounded-[18px] border border-slate-200 bg-slate-50 p-2.5 overflow-hidden">
+                  <div className="absolute right-2.5 top-2.5 z-10 flex items-center justify-end">
+                    <button
+                      type="button"
+                      onClick={handleAnalysisRefresh}
+                      disabled={!activeMac || analysisLoading}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60 hover:bg-slate-50"
+                    >
+                      <RotateCcw className={`h-2.5 w-2.5 ${analysisLoading ? "animate-spin" : ""}`} />
+                      {analysisLoading ? "갱신 중..." : "AI 새로고침"}
+                    </button>
+                  </div>
+                  <div className="grid h-full grid-cols-1 gap-2.5 pt-8 xl:grid-cols-3">
+                    <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200 bg-white p-2.5 overflow-hidden">
                       <div className="flex items-center gap-2 text-amber-600">
                         <Thermometer className="h-4 w-4" />
-                        <p className="text-[15px] font-bold">종합 분석</p>
+                        <p className="text-[16px] font-bold">종합 분석</p>
                       </div>
-                      <ul className="mt-2 min-h-0 flex-1 list-disc space-y-1 overflow-y-auto pr-1 pl-5 text-[15px] font-medium leading-relaxed text-slate-700">
+                      <ul className="mt-1.5 min-h-0 flex-1 list-disc space-y-0.5 overflow-y-auto pr-1 pl-5 text-[14px] font-medium leading-relaxed text-slate-700">
                         {overviewLines.map((item, idx) => (
                           <li key={`overview-${idx}-${item}`}>{item}</li>
                         ))}
                       </ul>
                     </div>
 
-                    <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200 bg-white p-3 overflow-hidden">
+                    <div className="flex h-full min-h-0 flex-col rounded-xl border border-slate-200 bg-white p-2.5 overflow-hidden">
                       <div className="flex items-center gap-2 text-sky-600">
                         <Droplets className="h-4 w-4" />
-                        <p className="text-[15px] font-bold">AI 제어</p>
+                        <p className="text-[16px] font-bold">AI 제어</p>
                       </div>
-                      <ul className="mt-2 min-h-0 flex-1 list-disc space-y-1 overflow-y-auto pr-1 pl-5 text-[15px] font-medium leading-relaxed text-slate-700">
+                      <ul className="mt-1.5 min-h-0 flex-1 list-disc space-y-0.5 overflow-y-auto pr-1 pl-5 text-[14px] font-medium leading-relaxed text-slate-700">
                         {controlLines.map((item, idx) => (
                           <li key={`control-${idx}-${item}`}>{item}</li>
                         ))}
                       </ul>
                     </div>
 
-                    <div className="flex h-full min-h-0 flex-col rounded-xl border border-indigo-200 bg-indigo-50 p-3 overflow-hidden">
+                    <div className="flex h-full min-h-0 flex-col rounded-xl border border-indigo-200 bg-indigo-50 p-2.5 overflow-hidden">
                       <div className="flex items-center gap-2 text-indigo-700">
                         <Lightbulb className="h-4 w-4" />
-                        <p className="text-[15px] font-bold">권장 행동 지침</p>
+                        <p className="text-[16px] font-bold">권장 행동 지침</p>
                       </div>
-                      <ul className="mt-2 min-h-0 flex-1 list-disc space-y-1 overflow-y-auto pr-1 pl-5 text-[15px] font-medium leading-relaxed text-indigo-800">
+                      <ul className="mt-1.5 min-h-0 flex-1 list-disc space-y-0.5 overflow-y-auto pr-1 pl-5 text-[14px] font-medium leading-relaxed text-indigo-800">
                         {guideLines.map((item, idx) => (
                           <li key={`guide-${idx}-${item}`}>{item}</li>
                         ))}
                       </ul>
                     </div>
+
                   </div>
               </div>
             </motion.div>
