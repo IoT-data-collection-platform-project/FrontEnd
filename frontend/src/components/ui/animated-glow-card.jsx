@@ -1,8 +1,8 @@
 import React from "react";
 
-const CardCanvas = ({ children, className = "" }) => {
-  return (
-    <div className={`card-canvas ${className}`}>
+  const CardCanvas = ({ children, className = "" }) => {
+    return (
+      <div className={`card-canvas ${className}`}>
       <style>{`
         .card-canvas {
           position: relative;
